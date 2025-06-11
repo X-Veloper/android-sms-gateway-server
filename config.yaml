@@ -6,11 +6,11 @@ http:
   listen: 0.0.0.0:3000
 
 database:
-  host: tramway.proxy.rlwy.net
-  port: 22158
-  user: root
-  password: GPVGTNnfJHOIsjGqHNGAjSmvYSMcFdeh
-  database: railway
-  timezone: Asia/Bangkok
+  host: ${{MYSQL_HOST}}
+  port: ${{MYSQL_PORT}}
+  user: ${{MYSQL_USER}}
+  password: ${{MYSQL_PASSWORD}}
+  database: ${{MYSQL_DATABASE}}
+  timezone: UTC
 
 # Add other configurations as needed
