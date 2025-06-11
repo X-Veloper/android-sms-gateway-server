@@ -1,0 +1,14 @@
+gateway:
+  mode: private
+  private_token: your-secure-token-here  # Change this to a secure token
+
+http:
+  listen: 0.0.0.0:3000
+
+database:
+  host: ${MYSQLHOST}
+  port: ${MYSQLPORT}
+  user: ${MYSQLUSER}
+  password: ${MYSQLPASSWORD}
+  database: ${MYSQLDATABASE}
+  timezone: UTC
