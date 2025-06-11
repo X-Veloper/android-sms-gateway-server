@@ -1,0 +1,16 @@
+gateway:
+  mode: private
+  private_token: your-secure-token-here  # Generate a strong random token
+
+http:
+  listen: 0.0.0.0:3000
+
+database:
+  host: tramway.proxy.rlwy.net
+  port: 22158
+  user: root
+  password: GPVGTNnfJHOIsjGqHNGAjSmvYSMcFdeh
+  database: railway
+  timezone: Asia/Bangkok
+
+# Add other configurations as needed
