@@ -10,12 +10,15 @@ import (
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/cleaner"
 	appdb "github.com/android-sms-gateway/server/internal/sms-gateway/modules/db"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/devices"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/events"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/health"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/messages"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/metrics"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/push"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/settings"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/sse"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/webhooks"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/openapi"
 	"github.com/capcom6/go-infra-fx/cli"
 	"github.com/capcom6/go-infra-fx/db"
 	"github.com/capcom6/go-infra-fx/http"
@@ -34,10 +37,12 @@ var Module = fx.Module(
 	appdb.Module,
 	http.Module,
 	validator.Module,
+	openapi.Module(),
 	handlers.Module,
 	auth.Module,
 	push.Module,
 	db.Module,
+	events.Module,
 	messages.Module,
 	health.Module,
 	webhooks.Module,
@@ -45,6 +50,7 @@ var Module = fx.Module(
 	devices.Module,
 	metrics.Module,
 	cleaner.Module,
+	sse.Module,
 )
 
 func Run() {

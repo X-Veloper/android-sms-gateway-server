@@ -16,6 +16,9 @@ init-dev: init
 		&& go install github.com/swaggo/swag/cmd/swag@latest \
 		&& go install github.com/pressly/goose/v3/cmd/goose@latest
 
+ngrok:
+	ngrok http 3000
+
 air:
 	air
 
@@ -45,19 +48,12 @@ docker-build:
 	docker build -f build/package/Dockerfile -t $(image_name) --build-arg APP=$(project_name) .
 
 docker:
-	docker-compose -f deployments/docker-compose/docker-compose.yml up --build
+	docker compose -f deployments/docker-compose/docker-compose.yml up --build
 
 docker-dev:
-	docker-compose -f deployments/docker-compose/docker-compose.dev.yml up --build
-
-api-docs:
-	swag fmt -g ./cmd/$(project_name)/main.go \
-		&& swag init --outputTypes json,yaml --parseDependency -g ./cmd/$(project_name)/main.go -o ./pkg/swagger/docs
-
-view-docs:
-	php -S 127.0.0.1:8080 -t ./api
+	docker compose -f deployments/docker-compose/docker-compose.dev.yml up --build
 
 clean:
-	docker-compose -f deployments/docker-compose/docker-compose.yml down --volumes
+	docker compose -f deployments/docker-compose/docker-compose.yml down --volumes
 
 .PHONY: init init-dev air db-upgrade db-upgrade-raw run test build install docker docker-dev api-docs view-docs clean

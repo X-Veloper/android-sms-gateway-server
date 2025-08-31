@@ -3,9 +3,12 @@ package messages
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/base"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/converters"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/middlewares/userauth"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/models"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/devices"
@@ -39,48 +42,92 @@ type ThirdPartyController struct {
 }
 
 //	@Summary		Enqueue message
-//	@Description	Enqueues message for sending. If multiple devices are registered, it will be sent via a random one
+//	@Description	Enqueues a message for sending. If `deviceId` is set, the specified device is used; otherwise a random registered device is chosen.
 //	@Security		ApiAuth
 //	@Tags			User, Messages
 //	@Accept			json
 //	@Produce		json
-//	@Param			skipPhoneValidation	query		bool						false	"Skip phone validation"
-//	@Param			request				body		smsgateway.Message			true	"Send message request"
-//	@Success		202					{object}	smsgateway.MessageState		"Message enqueued"
-//	@Failure		400					{object}	smsgateway.ErrorResponse	"Invalid request"
-//	@Failure		401					{object}	smsgateway.ErrorResponse	"Unauthorized"
-//	@Failure		409					{object}	smsgateway.ErrorResponse	"Message with such ID already exists"
-//	@Failure		500					{object}	smsgateway.ErrorResponse	"Internal server error"
-//	@Header			202					{string}	Location					"Get message state URL"
+//	@Param			skipPhoneValidation	query		bool							false	"Skip phone validation"
+//	@Param			deviceActiveWithin	query		int								false	"Filter devices active within the specified number of hours"	default(0)	minimum(0)
+//	@Param			request				body		smsgateway.Message				true	"Send message request"
+//	@Success		202					{object}	smsgateway.GetMessageResponse	"Message enqueued"
+//	@Failure		400					{object}	smsgateway.ErrorResponse		"Invalid request"
+//	@Failure		401					{object}	smsgateway.ErrorResponse		"Unauthorized"
+//	@Failure		409					{object}	smsgateway.ErrorResponse		"Message with such ID already exists"
+//	@Failure		500					{object}	smsgateway.ErrorResponse		"Internal server error"
+//	@Header			202					{string}	Location						"Get message state URL"
 //	@Router			/3rdparty/v1/messages [post]
 //
 // Enqueue message
 func (h *ThirdPartyController) post(user models.User, c *fiber.Ctx) error {
-	req := smsgateway.Message{}
+	var params thirdPartyPostQueryParams
+	if err := h.QueryParserValidator(c, &params); err != nil {
+		return err
+	}
+
+	var req smsgateway.Message
 	if err := h.BodyParserValidator(c, &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return err
 	}
 
-	skipPhoneValidation := c.QueryBool("skipPhoneValidation", false)
+	var device models.Device
+	var err error
+	var filters []devices.SelectFilter
 
-	devices, err := h.devicesSvc.Select(user.ID)
-	if err != nil {
-		h.Logger.Error("Failed to select devices", zap.Error(err), zap.String("user_id", user.ID))
-		return fiber.NewError(fiber.StatusInternalServerError, "Can't select devices. Please contact support")
+	if params.DeviceActiveWithin > 0 {
+		filters = append(filters, devices.ActiveWithin(time.Duration(params.DeviceActiveWithin)*time.Hour))
 	}
 
-	if len(devices) < 1 {
-		return fiber.NewError(fiber.StatusBadRequest, "No devices registered")
+	// Check if device_id is provided
+	if req.DeviceID != "" {
+
+		device, err = h.devicesSvc.Get(user.ID, append(filters, devices.WithID(req.DeviceID))...)
+		if err != nil {
+			if errors.Is(err, devices.ErrNotFound) {
+				return fiber.NewError(fiber.StatusBadRequest, "No active device with such ID found")
+			}
+			h.Logger.Error("Failed to get device", zap.Error(err), zap.String("user_id", user.ID), zap.String("device_id", req.DeviceID))
+			return fiber.NewError(fiber.StatusInternalServerError, "Can't select device. Please contact support")
+		}
+	} else {
+		// Fallback to random selection
+		devices, err := h.devicesSvc.Select(user.ID, filters...)
+		if err != nil {
+			h.Logger.Error("Failed to select devices", zap.Error(err), zap.String("user_id", user.ID))
+			return fiber.NewError(fiber.StatusInternalServerError, "Can't select devices. Please contact support")
+		}
+
+		if len(devices) < 1 {
+			return fiber.NewError(fiber.StatusBadRequest, "No active devices found")
+		}
+
+		device, err = slices.Random(devices)
+		if err != nil {
+			return fmt.Errorf("can't get random device: %w", err)
+		}
 	}
 
-	device, err := slices.Random(devices)
-	if err != nil {
-		return fmt.Errorf("can't get random device: %w", err)
+	var textContent *messages.TextMessageContent
+	var dataContent *messages.DataMessageContent
+	if text := req.GetTextMessage(); text != nil {
+		textContent = &messages.TextMessageContent{
+			Text: text.Text,
+		}
+	} else if data := req.GetDataMessage(); data != nil {
+		dataContent = &messages.DataMessageContent{
+			Data: data.Data,
+			Port: data.Port,
+		}
+	} else {
+		return fiber.NewError(fiber.StatusBadRequest, "No message content provided")
 	}
 
 	msg := messages.MessageIn{
-		ID:           req.ID,
-		Message:      req.Message,
+		ID: req.ID,
+
+		TextContent: textContent,
+		DataContent: dataContent,
+
 		PhoneNumbers: req.PhoneNumbers,
 		IsEncrypted:  req.IsEncrypted,
 
@@ -90,7 +137,7 @@ func (h *ThirdPartyController) post(user models.User, c *fiber.Ctx) error {
 		ValidUntil:         req.ValidUntil,
 		Priority:           req.Priority,
 	}
-	state, err := h.messagesSvc.Enqueue(device, msg, messages.EnqueueOptions{SkipPhoneValidation: skipPhoneValidation})
+	state, err := h.messagesSvc.Enqueue(device, msg, messages.EnqueueOptions{SkipPhoneValidation: params.SkipPhoneValidation})
 	if err != nil {
 		var errValidation messages.ErrValidation
 		if isBadRequest := errors.As(err, &errValidation); isBadRequest {
@@ -112,7 +159,52 @@ func (h *ThirdPartyController) post(user models.User, c *fiber.Ctx) error {
 		c.Location(location)
 	}
 
-	return c.Status(fiber.StatusAccepted).JSON(state)
+	return c.Status(fiber.StatusAccepted).
+		JSON(smsgateway.GetMessageResponse{
+			ID:          state.ID,
+			DeviceID:    state.DeviceID,
+			State:       smsgateway.ProcessingState(state.State),
+			IsHashed:    state.IsHashed,
+			IsEncrypted: state.IsEncrypted,
+			Recipients:  state.Recipients,
+			States:      state.States,
+		})
+}
+
+//	@Summary		Get messages
+//	@Description	Retrieves a list of messages with filtering and pagination
+//	@Security		ApiAuth
+//	@Tags			User, Messages
+//	@Produce		json
+//	@Param			from		query		string							false	"Start date in RFC3339 format"			Format(date-time)
+//	@Param			to			query		string							false	"End date in RFC3339 format"			Format(date-time)
+//	@Param			state		query		string							false	"Filter messages by processing state"	Enum(Pending, Processed, Sent, Delivered, Failed)
+//	@Param			deviceId	query		string							false	"Filter by device ID"					min(21)		max(21)
+//	@Param			limit		query		int								false	"Pagination limit"						default(50)	min(1)	max(100)
+//	@Param			offset		query		int								false	"Pagination offset"						default(0)
+//	@Success		200			{object}	smsgateway.GetMessagesResponse	"A list of messages"
+//	@Failure		400			{object}	smsgateway.ErrorResponse		"Invalid request"
+//	@Failure		401			{object}	smsgateway.ErrorResponse		"Unauthorized"
+//	@Failure		500			{object}	smsgateway.ErrorResponse		"Internal server error"
+//	@Router			/3rdparty/v1/messages [get]
+//
+// Get message history
+func (h *ThirdPartyController) list(user models.User, c *fiber.Ctx) error {
+	params := thirdPartyGetQueryParams{}
+	if err := h.QueryParserValidator(c, &params); err != nil {
+		return err
+	}
+
+	messages, total, err := h.messagesSvc.SelectStates(user, params.ToFilter(), params.ToOptions())
+	if err != nil {
+		h.Logger.Error("Failed to get message history", zap.Error(err), zap.String("user_id", user.ID))
+		return fiber.NewError(fiber.StatusInternalServerError, "Failed to retrieve message history")
+	}
+
+	c.Set("X-Total-Count", strconv.Itoa(int(total)))
+	return c.JSON(
+		slices.Map(messages, converters.MessageStateToDTO),
+	)
 }
 
 //	@Summary		Get message state
@@ -120,11 +212,11 @@ func (h *ThirdPartyController) post(user models.User, c *fiber.Ctx) error {
 //	@Security		ApiAuth
 //	@Tags			User, Messages
 //	@Produce		json
-//	@Param			id	path		string						true	"Message ID"
-//	@Success		200	{object}	smsgateway.MessageState		"Message state"
-//	@Failure		400	{object}	smsgateway.ErrorResponse	"Invalid request"
-//	@Failure		401	{object}	smsgateway.ErrorResponse	"Unauthorized"
-//	@Failure		500	{object}	smsgateway.ErrorResponse	"Internal server error"
+//	@Param			id	path		string							true	"Message ID"
+//	@Success		200	{object}	smsgateway.GetMessageResponse	"Message state"
+//	@Failure		400	{object}	smsgateway.ErrorResponse		"Invalid request"
+//	@Failure		401	{object}	smsgateway.ErrorResponse		"Unauthorized"
+//	@Failure		500	{object}	smsgateway.ErrorResponse		"Internal server error"
 //	@Router			/3rdparty/v1/messages/{id} [get]
 //
 // Get message state
@@ -140,7 +232,7 @@ func (h *ThirdPartyController) get(user models.User, c *fiber.Ctx) error {
 		return err
 	}
 
-	return c.JSON(state)
+	return c.JSON(converters.MessageStateToDTO(state))
 }
 
 //	@Summary		Request inbox messages export
@@ -160,7 +252,7 @@ func (h *ThirdPartyController) get(user models.User, c *fiber.Ctx) error {
 func (h *ThirdPartyController) postInboxExport(user models.User, c *fiber.Ctx) error {
 	req := smsgateway.MessagesExportRequest{}
 	if err := h.BodyParserValidator(c, &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return err
 	}
 
 	device, err := h.devicesSvc.Get(user.ID, devices.WithID(req.DeviceID))
@@ -180,8 +272,9 @@ func (h *ThirdPartyController) postInboxExport(user models.User, c *fiber.Ctx) e
 }
 
 func (h *ThirdPartyController) Register(router fiber.Router) {
+	router.Get("", userauth.WithUser(h.list))
 	router.Post("", userauth.WithUser(h.post))
-	router.Get(":id", userauth.WithUser(h.get))
+	router.Get(":id", userauth.WithUser(h.get)).Name(route3rdPartyGetMessage)
 
 	router.Post("inbox/export", userauth.WithUser(h.postInboxExport))
 }

@@ -68,10 +68,10 @@ func (h *upstreamHandler) postPush(c *fiber.Ctx) error {
 			return err
 		}
 
-		event := push.NewEvent(
-			anys.ZeroDefault(v.Event, smsgateway.PushMessageEnqueued),
-			v.Data,
-		)
+		event := push.Event{
+			Type: anys.ZeroDefault(v.Event, smsgateway.PushMessageEnqueued),
+			Data: v.Data,
+		}
 
 		if err := h.pushSvc.Enqueue(v.Token, event); err != nil {
 			h.Logger.Error("Can't push message", zap.Error(err))
@@ -81,9 +81,14 @@ func (h *upstreamHandler) postPush(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusAccepted)
 }
 
+// Register registers upstream handlers with the given router.
+//
+// If upstream is disabled in the configuration, this function does nothing.
+//
+// It registers a single handler for sending push notifications to
+// /upstream/v1/push, with a rate limiter of 5 requests per minute.
 func (h *upstreamHandler) Register(router fiber.Router) {
-	// register only in public mode
-	if h.config.GatewayMode != GatewayModePublic {
+	if !h.config.UpstreamEnabled {
 		return
 	}
 

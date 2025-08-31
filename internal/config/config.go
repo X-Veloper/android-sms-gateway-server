@@ -13,6 +13,7 @@ type Config struct {
 	Database Database  `yaml:"database"` // database config
 	FCM      FCMConfig `yaml:"fcm"`      // firebase cloud messaging config
 	Tasks    Tasks     `yaml:"tasks"`    // tasks config
+	SSE      SSE       `yaml:"sse"`      // server-sent events config
 }
 
 type Gateway struct {
@@ -23,6 +24,18 @@ type Gateway struct {
 type HTTP struct {
 	Listen  string   `yaml:"listen" envconfig:"HTTP__LISTEN"`   // listen address
 	Proxies []string `yaml:"proxies" envconfig:"HTTP__PROXIES"` // proxies
+
+	API     API     `yaml:"api"`
+	OpenAPI OpenAPI `yaml:"openapi"`
+}
+
+type API struct {
+	Host string `yaml:"host" envconfig:"HTTP__API__HOST"` // public API host
+	Path string `yaml:"path" envconfig:"HTTP__API__PATH"` // public API path
+}
+
+type OpenAPI struct {
+	Enabled bool `yaml:"enabled" envconfig:"HTTP__OPENAPI__ENABLED"` // openapi enabled
 }
 
 type Database struct {
@@ -53,6 +66,10 @@ type HashingTask struct {
 	IntervalSeconds uint16 `yaml:"interval_seconds" envconfig:"TASKS__HASHING__INTERVAL_SECONDS"` // hashing interval in seconds
 }
 
+type SSE struct {
+	KeepAlivePeriodSeconds uint16 `yaml:"keep_alive_period_seconds" envconfig:"SSE__KEEP_ALIVE_PERIOD_SECONDS"` // keep alive period in seconds, 0 for no keep alive
+}
+
 var defaultConfig = Config{
 	Gateway: Gateway{Mode: GatewayModePublic},
 	HTTP: HTTP{
@@ -74,5 +91,8 @@ var defaultConfig = Config{
 		Hashing: HashingTask{
 			IntervalSeconds: uint16(15 * 60),
 		},
+	},
+	SSE: SSE{
+		KeepAlivePeriodSeconds: 15,
 	},
 }

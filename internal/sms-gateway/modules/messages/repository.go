@@ -4,61 +4,129 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
-	"github.com/android-sms-gateway/server/internal/sms-gateway/models"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const hashingLockName = "36444143-1ace-4dbf-891c-cc505911497e"
+const maxPendingBatch = 100
 
 var ErrMessageNotFound = gorm.ErrRecordNotFound
 var ErrMessageAlreadyExists = errors.New("duplicate id")
+var ErrMultipleMessagesFound = errors.New("multiple messages found")
 
 type repository struct {
 	db *gorm.DB
 }
 
-func (r *repository) SelectPending(deviceID string) (messages []models.Message, err error) {
-	err = r.db.
-		Where("device_id = ? AND state = ?", deviceID, models.ProcessingStatePending).
-		Order("priority DESC, id DESC").
-		Limit(100).
-		Preload("Recipients").
-		Find(&messages).
-		Error
+func (r *repository) Select(filter MessagesSelectFilter, options MessagesSelectOptions) ([]Message, int64, error) {
+	query := r.db.Model(&Message{})
 
-	return
-}
+	// Apply date range filter
+	if !filter.StartDate.IsZero() {
+		query = query.Where("messages.created_at >= ?", filter.StartDate)
+	}
+	if !filter.EndDate.IsZero() {
+		query = query.Where("messages.created_at < ?", filter.EndDate)
+	}
 
-func (r *repository) Get(ID string, filter MessagesSelectFilter, options ...MessagesSelectOptions) (message models.Message, err error) {
-	query := r.db.Model(&message).
-		Where("ext_id = ?", ID)
+	// Apply ID filter
+	if filter.ExtID != "" {
+		query = query.Where("messages.ext_id = ?", filter.ExtID)
+	}
 
+	// Apply user filter
+	if filter.UserID != "" {
+		query = query.
+			Joins("JOIN devices ON messages.device_id = devices.id").
+			Where("devices.user_id = ?", filter.UserID)
+	}
+
+	// Apply state filter
+	if filter.State != "" {
+		query = query.Where("messages.state = ?", filter.State)
+	}
+
+	// Apply device filter
 	if filter.DeviceID != "" {
-		query = query.Where("device_id = ?", filter.DeviceID)
+		query = query.Where("messages.device_id = ?", filter.DeviceID)
 	}
 
-	if len(options) > 0 {
-		if options[0].WithRecipients {
-			query = query.Preload("Recipients")
-		}
-		if options[0].WithDevice {
-			query = query.Joins("Device")
-		}
-		if options[0].WithStates {
-			query = query.Preload("States")
-		}
+	// Get total count
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
 	}
 
-	err = query.Take(&message).Error
+	// Apply pagination
+	if options.Limit > 0 {
+		query = query.Limit(options.Limit)
+	}
+	if options.Offset > 0 {
+		query = query.Offset(options.Offset)
+	}
 
-	return
+	// Apply ordering
+	if options.OrderBy == MessagesOrderFIFO {
+		query = query.Order("messages.priority DESC, messages.id ASC")
+	} else {
+		query = query.Order("messages.priority DESC, messages.id DESC")
+	}
+
+	// Preload related data
+	if options.WithRecipients {
+		query = query.Preload("Recipients")
+	}
+	if filter.UserID == "" && options.WithDevice {
+		query = query.Joins("Device")
+	}
+	if options.WithStates {
+		query = query.Preload("States")
+	}
+
+	messages := make([]Message, 0, min(options.Limit, int(total)))
+	if err := query.Find(&messages).Error; err != nil {
+		return nil, 0, fmt.Errorf("can't select messages: %w", err)
+	}
+
+	return messages, total, nil
 }
 
-func (r *repository) Insert(message *models.Message) error {
+func (r *repository) SelectPending(deviceID string, order MessagesOrder) ([]Message, error) {
+	messages, _, err := r.Select(MessagesSelectFilter{
+		DeviceID: deviceID,
+		State:    ProcessingStatePending,
+	}, MessagesSelectOptions{
+		WithRecipients: true,
+		Limit:          maxPendingBatch,
+		OrderBy:        order,
+	})
+
+	return messages, err
+}
+
+func (r *repository) Get(filter MessagesSelectFilter, options MessagesSelectOptions) (Message, error) {
+	messages, _, err := r.Select(filter, options)
+	if err != nil {
+		return Message{}, fmt.Errorf("can't get message: %w", err)
+	}
+
+	if len(messages) == 0 {
+		return Message{}, ErrMessageNotFound
+	}
+
+	if len(messages) > 1 {
+		return Message{}, ErrMultipleMessagesFound
+	}
+
+	return messages[0], nil
+}
+
+func (r *repository) Insert(message *Message) error {
 	err := r.db.Omit("Device").Create(message).Error
 	if err == nil {
 		return nil
@@ -70,7 +138,7 @@ func (r *repository) Insert(message *models.Message) error {
 	return err
 }
 
-func (r *repository) UpdateState(message *models.Message) error {
+func (r *repository) UpdateState(message *Message) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(message).Select("State").Updates(message).Error; err != nil {
 			return err
@@ -97,7 +165,7 @@ func (r *repository) UpdateState(message *models.Message) error {
 
 func (r *repository) HashProcessed(ids []uint64) error {
 	rawSQL := "UPDATE `messages` `m`, `message_recipients` `r`\n" +
-		"SET `m`.`is_hashed` = true, `m`.`message` = SHA2(m.message, 256), `r`.`phone_number` = LEFT(SHA2(phone_number, 256), 16)\n" +
+		"SET `m`.`is_hashed` = true, `m`.`content` = SHA2(COALESCE(JSON_VALUE(`content`, '$.text'), JSON_VALUE(`content`, '$.data')), 256), `r`.`phone_number` = LEFT(SHA2(phone_number, 256), 16)\n" +
 		"WHERE `m`.`id` = `r`.`message_id` AND `m`.`is_hashed` = false AND `m`.`is_encrypted` = false AND `m`.`state` <> 'Pending'"
 	params := []interface{}{}
 	if len(ids) > 0 {
@@ -130,9 +198,9 @@ func (r *repository) HashProcessed(ids []uint64) error {
 func (r *repository) removeProcessed(ctx context.Context, until time.Time) (int64, error) {
 	res := r.db.
 		WithContext(ctx).
-		Where("state <> ?", models.ProcessingStatePending).
+		Where("state <> ?", ProcessingStatePending).
 		Where("created_at < ?", until).
-		Delete(&models.Message{})
+		Delete(&Message{})
 	return res.RowsAffected, res.Error
 }
 

@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/android-sms-gateway/client-go/smsgateway"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/base"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/converters"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/events"
+	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/messages"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/middlewares/deviceauth"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/middlewares/userauth"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/handlers/settings"
@@ -15,9 +16,7 @@ import (
 	"github.com/android-sms-gateway/server/internal/sms-gateway/models"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/auth"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/devices"
-	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/messages"
 	"github.com/capcom6/go-helpers/anys"
-	"github.com/capcom6/go-helpers/slices"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/keyauth"
@@ -26,15 +25,31 @@ import (
 	"go.uber.org/zap"
 )
 
+type mobileHandlerParams struct {
+	fx.In
+
+	Logger    *zap.Logger
+	Validator *validator.Validate
+
+	AuthSvc    *auth.Service
+	DevicesSvc *devices.Service
+
+	MessagesCtrl *messages.MobileController
+	WebhooksCtrl *webhooks.MobileController
+	SettingsCtrl *settings.MobileController
+	EventsCtrl   *events.MobileController
+}
+
 type mobileHandler struct {
 	base.Handler
 
-	authSvc     *auth.Service
-	devicesSvc  *devices.Service
-	messagesSvc *messages.Service
+	authSvc    *auth.Service
+	devicesSvc *devices.Service
 
+	messagesCtrl *messages.MobileController
 	webhooksCtrl *webhooks.MobileController
 	settingsCtrl *settings.MobileController
+	eventsCtrl   *events.MobileController
 
 	idGen func() string
 }
@@ -81,7 +96,7 @@ func (h *mobileHandler) postDevice(c *fiber.Ctx) (err error) {
 	req := smsgateway.MobileRegisterRequest{}
 
 	if err = h.BodyParserValidator(c, &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return err
 	}
 
 	var (
@@ -135,7 +150,7 @@ func (h *mobileHandler) patchDevice(device models.Device, c *fiber.Ctx) error {
 	req := smsgateway.MobileUpdateRequest{}
 
 	if err := h.BodyParserValidator(c, &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return err
 	}
 
 	if req.Id != device.ID {
@@ -144,66 +159,6 @@ func (h *mobileHandler) patchDevice(device models.Device, c *fiber.Ctx) error {
 
 	if err := h.devicesSvc.UpdatePushToken(req.Id, req.PushToken); err != nil {
 		return err
-	}
-
-	return c.SendStatus(fiber.StatusNoContent)
-}
-
-//	@Summary		Get messages for sending
-//	@Description	Returns list of pending messages
-//	@Security		MobileToken
-//	@Tags			Device, Messages
-//	@Accept			json
-//	@Produce		json
-//	@Success		200	{object}	smsgateway.MobileGetMessagesResponse	"List of pending messages"
-//	@Failure		500	{object}	smsgateway.ErrorResponse				"Internal server error"
-//	@Router			/mobile/v1/message [get]
-//
-// Get messages for sending
-func (h *mobileHandler) getMessage(device models.Device, c *fiber.Ctx) error {
-	msgs, err := h.messagesSvc.SelectPending(device.ID)
-	if err != nil {
-		return fmt.Errorf("can't get messages: %w", err)
-	}
-
-	return c.JSON(
-		smsgateway.MobileGetMessagesResponse(
-			slices.Map(
-				msgs,
-				converters.MessageToDTO,
-			),
-		),
-	)
-}
-
-//	@Summary		Update message state
-//	@Description	Updates message state
-//	@Security		MobileToken
-//	@Tags			Device, Messages
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		[]smsgateway.MessageState	true	"New message state"
-//	@Success		204		{object}	nil							"Successfully updated"
-//	@Failure		400		{object}	smsgateway.ErrorResponse	"Invalid request"
-//	@Failure		500		{object}	smsgateway.ErrorResponse	"Internal server error"
-//	@Router			/mobile/v1/message [patch]
-//
-// Update message state
-func (h *mobileHandler) patchMessage(device models.Device, c *fiber.Ctx) error {
-	req := []smsgateway.MessageState{}
-	if err := c.BodyParser(&req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	}
-
-	for _, v := range req {
-		if err := h.ValidateStruct(v); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
-		}
-
-		err := h.messagesSvc.UpdateState(device.ID, v)
-		if err != nil && !errors.Is(err, messages.ErrMessageNotFound) {
-			h.Logger.Error("Can't update message status", zap.Error(err))
-		}
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
@@ -250,7 +205,7 @@ func (h *mobileHandler) changePassword(device models.Device, c *fiber.Ctx) error
 	req := smsgateway.MobileChangePasswordRequest{}
 
 	if err := h.BodyParserValidator(c, &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return err
 	}
 
 	if err := h.authSvc.ChangePassword(device.UserID, req.CurrentPassword, req.NewPassword); err != nil {
@@ -298,41 +253,29 @@ func (h *mobileHandler) Register(router fiber.Router) {
 
 	router.Patch("/device", deviceauth.WithDevice(h.patchDevice))
 
-	router.Get("/message", deviceauth.WithDevice(h.getMessage))
-	router.Patch("/message", deviceauth.WithDevice(h.patchMessage))
-
 	// Should be under `userauth.NewBasic` protection instead of `deviceauth`
 	router.Patch("/user/password", deviceauth.WithDevice(h.changePassword))
 
+	h.messagesCtrl.Register(router.Group("/message"))
+	h.messagesCtrl.Register(router.Group("/messages"))
 	h.webhooksCtrl.Register(router.Group("/webhooks"))
-
 	h.settingsCtrl.Register(router.Group("/settings"))
-}
-
-type mobileHandlerParams struct {
-	fx.In
-
-	Logger    *zap.Logger
-	Validator *validator.Validate
-
-	AuthSvc     *auth.Service
-	DevicesSvc  *devices.Service
-	MessagesSvc *messages.Service
-
-	WebhooksCtrl *webhooks.MobileController
-	SettingsCtrl *settings.MobileController
+	h.eventsCtrl.Register(router.Group("/events"))
 }
 
 func newMobileHandler(params mobileHandlerParams) *mobileHandler {
 	idGen, _ := nanoid.Standard(21)
 
 	return &mobileHandler{
-		Handler:      base.Handler{Logger: params.Logger, Validator: params.Validator},
-		authSvc:      params.AuthSvc,
+		Handler: base.Handler{Logger: params.Logger, Validator: params.Validator},
+		authSvc: params.AuthSvc,
+
+		messagesCtrl: params.MessagesCtrl,
 		devicesSvc:   params.DevicesSvc,
-		messagesSvc:  params.MessagesSvc,
 		webhooksCtrl: params.WebhooksCtrl,
 		settingsCtrl: params.SettingsCtrl,
-		idGen:        idGen,
+		eventsCtrl:   params.EventsCtrl,
+
+		idGen: idGen,
 	}
 }

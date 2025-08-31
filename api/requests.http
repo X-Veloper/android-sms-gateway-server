@@ -10,7 +10,7 @@ GET {{baseUrl}}/health HTTP/1.1
 GET {{baseUrl}}/3rdparty/v1/health HTTP/1.1
 
 ###
-POST {{baseUrl}}/3rdparty/v1/messages?skipPhoneValidation=false HTTP/1.1
+POST {{baseUrl}}/3rdparty/v1/messages?skipPhoneValidation=false&deviceActiveWithin=240 HTTP/1.1
 Content-Type: application/json
 Authorization: Basic {{credentials}}
 
@@ -23,6 +23,35 @@ Authorization: Basic {{credentials}}
     "withDeliveryReport": true,
     "priority": 127,
     "simNumber": {{$randomInt 1 2}}
+}
+
+###
+POST {{baseUrl}}/3rdparty/v1/messages HTTP/1.1
+Content-Type: application/json
+Authorization: Basic {{credentials}}
+
+{
+    "textMessage": {
+        "text": "{{$localDatetime iso8601}}"
+    },
+    "phoneNumbers": [
+        "{{phone}}"
+    ]
+}
+
+###
+POST {{baseUrl}}/3rdparty/v1/messages HTTP/1.1
+Content-Type: application/json
+Authorization: Basic {{credentials}}
+
+{
+    "dataMessage": {
+        "data": "SGVsbG8gRGF0YSBXb3JsZCE=",
+        "port": 53739
+    },
+    "phoneNumbers": [
+        "{{phone}}"
+    ]
 }
 
 ###
@@ -46,14 +75,22 @@ GET {{baseUrl}}/3rdparty/v1/messages/K56aIsVsQ2rECdv_ajzTd HTTP/1.1
 Authorization: Basic {{credentials}}
 
 ###
-POST {{baseUrl}}/api/3rdparty/v1/messages/inbox/export HTTP/1.1
+GET {{baseUrl}}/3rdparty/v1/messages HTTP/1.1
+Authorization: Basic {{credentials}}
+
+###
+GET {{baseUrl}}/3rdparty/v1/messages?from=2025-01-01T00:00:00.000Z&to=2025-12-31T23:59:59Z&state=Pending&deviceId=fL2m4IirEvh9BvTf6TIB0&limit=50&offset=0 HTTP/1.1
+Authorization: Basic {{credentials}}
+
+###
+POST {{baseUrl}}/3rdparty/v1/messages/inbox/export HTTP/1.1
 Authorization: Basic {{credentials}}
 Content-Type: application/json
 
 {
     "since": "2024-12-01T00:00:00.000Z",
     "until": "2024-12-31T23:59:59.999Z",
-    "deviceId": "MxKw03Q2ZVoomrLeDLlMO"
+    "deviceId": "_Py53j9Cj-JAWMqDXQcQF"
 }
 
 ###
