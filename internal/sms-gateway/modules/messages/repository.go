@@ -2,12 +2,14 @@ package messages
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/android-sms-gateway/server/internal/sms-gateway/models"
-	"github.com/go-sql-driver/mysql"
+	"github.com/mattn/go-sqlite3"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -16,6 +18,9 @@ const hashingLockName = "36444143-1ace-4dbf-891c-cc505911497e"
 
 var ErrMessageNotFound = gorm.ErrRecordNotFound
 var ErrMessageAlreadyExists = errors.New("duplicate id")
+
+// SQLite doesn't have named locks like MySQL, so we use a mutex
+var hashingMutex = &sync.Mutex{}
 
 type repository struct {
 	db *gorm.DB
@@ -64,7 +69,7 @@ func (r *repository) Insert(message *models.Message) error {
 		return nil
 	}
 
-	if mysqlErr := err.(*mysql.MySQLError); mysqlErr != nil && mysqlErr.Number == 1062 {
+	if sqliteErr, ok := err.(sqlite3.Error); ok && sqliteErr.ExtendedCode == sqlite3.ErrConstraintUnique {
 		return ErrMessageAlreadyExists
 	}
 	return err
@@ -96,29 +101,48 @@ func (r *repository) UpdateState(message *models.Message) error {
 }
 
 func (r *repository) HashProcessed(ids []uint64) error {
-	rawSQL := "UPDATE `messages` `m`, `message_recipients` `r`\n" +
-		"SET `m`.`is_hashed` = true, `m`.`message` = SHA2(m.message, 256), `r`.`phone_number` = LEFT(SHA2(phone_number, 256), 16)\n" +
-		"WHERE `m`.`id` = `r`.`message_id` AND `m`.`is_hashed` = false AND `m`.`is_encrypted` = false AND `m`.`state` <> 'Pending'"
-	params := []interface{}{}
-	if len(ids) > 0 {
-		rawSQL += " AND `m`.`id` IN (?)"
-		params = append(params, ids)
-	}
+	// Use mutex for SQLite since it doesn't have named locks
+	hashingMutex.Lock()
+	defer hashingMutex.Unlock()
 
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		hasLock := sql.NullBool{}
-		lockRow := tx.Raw("SELECT GET_LOCK(?, 1)", hashingLockName).Row()
-		err := lockRow.Scan(&hasLock)
-		if err != nil {
+		// Get messages to hash
+		var messages []models.Message
+		query := tx.Where("is_hashed = ? AND is_encrypted = ? AND state != ?", false, false, models.ProcessingStatePending)
+		if len(ids) > 0 {
+			query = query.Where("id IN ?", ids)
+		}
+		if err := query.Preload("Recipients").Find(&messages).Error; err != nil {
 			return err
 		}
 
-		if !hasLock.Valid || !hasLock.Bool {
-			return errors.New("failed to acquire lock")
-		}
-		defer tx.Exec("SELECT RELEASE_LOCK(?)", hashingLockName)
+		// Hash each message using Go's crypto/sha256
+		for _, msg := range messages {
+			// Hash the message content
+			messageHash := sha256.Sum256([]byte(msg.Message))
+			hashedMessage := fmt.Sprintf("%x", messageHash)
 
-		return tx.Exec(rawSQL, params...).Error
+			// Update message
+			if err := tx.Model(&msg).Updates(map[string]interface{}{
+				"is_hashed": true,
+				"message":   hashedMessage,
+			}).Error; err != nil {
+				return err
+			}
+
+			// Hash phone numbers
+			for _, recipient := range msg.Recipients {
+				phoneHash := sha256.Sum256([]byte(recipient.PhoneNumber))
+				// Take first 16 characters like LEFT(SHA2(phone_number, 256), 16)
+				hashedPhone := fmt.Sprintf("%x", phoneHash)[:16]
+				
+				if err := tx.Model(&recipient).Where("message_id = ?", msg.ID).Update("phone_number", hashedPhone).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
 	})
 }
 

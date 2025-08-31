@@ -26,12 +26,12 @@ type HTTP struct {
 }
 
 type Database struct {
-	Dialect  string `yaml:"dialect"  envconfig:"DATABASE__DIALECT"`  // database dialect
-	Host     string `yaml:"host"     envconfig:"DATABASE__HOST"`     // database host
-	Port     int    `yaml:"port"     envconfig:"DATABASE__PORT"`     // database port
-	User     string `yaml:"user"     envconfig:"DATABASE__USER"`     // database user
-	Password string `yaml:"password" envconfig:"DATABASE__PASSWORD"` // database password
-	Database string `yaml:"database" envconfig:"DATABASE__DATABASE"` // database name
+	Dialect  string `yaml:"dialect"  envconfig:"DATABASE__DIALECT"`  // database dialect (mysql, sqlite)
+	Host     string `yaml:"host"     envconfig:"DATABASE__HOST"`     // database host (for mysql)
+	Port     int    `yaml:"port"     envconfig:"DATABASE__PORT"`     // database port (for mysql)
+	User     string `yaml:"user"     envconfig:"DATABASE__USER"`     // database user (for mysql)
+	Password string `yaml:"password" envconfig:"DATABASE__PASSWORD"` // database password (for mysql)
+	Database string `yaml:"database" envconfig:"DATABASE__DATABASE"` // database name (for mysql) or file path (for sqlite)
 	Timezone string `yaml:"timezone" envconfig:"DATABASE__TIMEZONE"` // database timezone
 	Debug    bool   `yaml:"debug"    envconfig:"DATABASE__DEBUG"`    // debug mode
 
@@ -59,12 +59,8 @@ var defaultConfig = Config{
 		Listen: ":3000",
 	},
 	Database: Database{
-		Dialect:  "mysql",
-		Host:     "localhost",
-		Port:     3306,
-		User:     "sms",
-		Password: "sms",
-		Database: "sms",
+		Dialect:  "sqlite3",
+		Database: "sms.db",
 		Timezone: "UTC",
 	},
 	FCM: FCMConfig{

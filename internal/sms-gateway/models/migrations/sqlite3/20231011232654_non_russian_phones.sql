@@ -1,0 +1,14 @@
+-- +goose Up
+-- +goose StatementBegin
+-- SQLite doesn't support MODIFY COLUMN directly, but since phone_number is already TEXT 
+-- in SQLite (which can store variable length strings), this migration is essentially a no-op
+-- However, for consistency with the MySQL version, we document the intent
+-- This migration expands phone_number support from 11 chars to 16 chars for non-Russian phones
+-- In SQLite, TEXT already supports this without modification
+-- +goose StatementEnd
+--
+-- +goose Down
+-- +goose StatementBegin
+-- No action needed in SQLite as TEXT column already supports variable lengths
+-- The original constraint was char(11) in MySQL, but SQLite uses TEXT which is flexible
+-- +goose StatementEnd

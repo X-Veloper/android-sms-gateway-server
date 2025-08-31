@@ -10,6 +10,8 @@ services:
     environment:
       - DEBUG=1
       - HTTP__LISTEN=:3000
+      - DATABASE__DIALECT=sqlite3
+      - DATABASE__DATABASE=/app/data/sms.db
     env_file:
       - .env
     ports:

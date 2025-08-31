@@ -1,0 +1,13 @@
+-- +goose Up
+-- +goose StatementBegin
+-- SQLite doesn't support MODIFY COLUMN, and the message column is already TEXT
+-- in SQLite (which supports any length), so this migration is essentially a no-op
+-- This migration expands message length from tinytext to text in MySQL
+-- In SQLite, TEXT already supports this without modification
+-- +goose StatementEnd
+---
+-- +goose Down
+-- +goose StatementBegin
+-- No action needed in SQLite as TEXT column already supports variable lengths
+-- The original constraint was tinytext in MySQL, but SQLite uses TEXT which is flexible
+-- +goose StatementEnd
