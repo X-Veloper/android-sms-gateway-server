@@ -51,6 +51,9 @@ var Module = fx.Module(
 		mode := push.ModeFCM
 		if cfg.Gateway.Mode == "private" {
 			mode = push.ModeUpstream
+		} else if cfg.FCM.CredentialsJSON == "" || cfg.FCM.CredentialsJSON == "{}" {
+			// Use upstream mode in public gateway when FCM credentials are empty or placeholder
+			mode = push.ModeUpstream
 		}
 
 		return push.Config{
