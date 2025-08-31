@@ -170,4 +170,4 @@ $RECYCLE.BIN/
 
 /api/docs.go
 
-go.work*
+go.work*sms.db

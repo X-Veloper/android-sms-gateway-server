@@ -6,6 +6,9 @@ ARG APP_VERSION=1.0.0
 ARG APP_RELEASE_ID=1
 WORKDIR /go/src
 
+# Install build dependencies for SQLite (CGO)
+RUN apk add --no-cache gcc musl-dev
+
 # Install swag
 RUN go install github.com/swaggo/swag/cmd/swag@latest
 
@@ -24,9 +27,8 @@ RUN sed -i "s/{APP_VERSION}/${APP_VERSION}/g" ./cmd/${APP}/main.go
 # Generate swagger docs
 RUN go generate ./...
 
-# Builds the application as a staticly linked one, to allow it to run on alpine
-# RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o app .
-RUN CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags="-w -s -X github.com/android-sms-gateway/server/internal/version.AppVersion=${APP_VERSION} -X github.com/android-sms-gateway/server/internal/version.AppRelease=${APP_RELEASE_ID}" -o app ./cmd/${APP}/main.go
+# Builds the application with CGO enabled for SQLite support
+RUN CGO_ENABLED=1 go build -a -ldflags="-w -s -X github.com/android-sms-gateway/server/internal/version.AppVersion=${APP_VERSION} -X github.com/android-sms-gateway/server/internal/version.AppRelease=${APP_RELEASE_ID} -linkmode external -extldflags '-static'" -o app ./cmd/${APP}/main.go
 
 # Moving the binary to the 'final Image' to make it smaller
 FROM alpine:3 AS prod
@@ -35,6 +37,9 @@ WORKDIR /app
 
 RUN apk add --no-cache tzdata
 
+# Create data directory for SQLite database
+RUN mkdir -p /app/data && chmod 755 /app/data
+
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 
 COPY --from=build /go/src/app /app
@@ -42,7 +47,10 @@ COPY --from=build /go/src/app /app
 # Exposes port 3000 because our program listens on that port
 EXPOSE 3000
 
-USER guest
+# Create volume for SQLite database persistence
+VOLUME ["/app/data"]
+
+USER nobody
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 --start-period=5s CMD /app/app health || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
