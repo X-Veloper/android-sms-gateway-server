@@ -44,6 +44,9 @@ COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 
 COPY --from=build /go/src/app /app
 
+# Set proper permissions for nobody user to access data directory
+RUN chown -R nobody:nobody /app/data && chmod 755 /docker-entrypoint.sh
+
 # Exposes port 3000 because our program listens on that port
 EXPOSE 3000
 
